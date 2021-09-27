@@ -72,8 +72,16 @@ TIMESTAMP | datetime.datetime without tzinfo
 TIMESTAMP WITH LOCAL TIME ZONE | datetime.datetime with tzinfo
 HASHTYPE with '-' | uuid.UUID
 HASHTYPE without '-' | bytes
-DOUBLE | float
 
+The following types are already converted by the JSON protocol
+
+Exasol type | Python type
+----------- | -----------
+DOUBLE | float
+CHAR, VARCHAR | str
+BOOLEAN | bool
+
+Not converted (yet) are INTERVAL and GEOMETRY values.
 
 # todo
 
