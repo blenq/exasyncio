@@ -1,23 +1,25 @@
-from asyncio import run_coroutine_threadsafe, sleep
+""" exasyncio result
+
+Manage the results of executed Exasol queries
+
+"""
+from asyncio import run_coroutine_threadsafe
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from functools import cached_property
 import re
-from types import TracebackType
-from typing import (
-    Optional,
-    Type,
-)
+
 from uuid import UUID
 
-from .common import EXA_CONNECTED
+from .common import ExaConnStatus, AsyncContextMixin
 
 datetime_pattern = re.compile(
     r"YYYY-MM-DD(( |T)HH(24)?(:MI(:SS(\.FF(3|6))?)?)?)?")
 
 
 class ResultType(Enum):
+    """ Indicates the type of result """
     RESULTSET = 'resultSet'
     ROWCOUNT = 'rowCount'
 
@@ -29,8 +31,10 @@ def _get_hash(val):
     return bytes.fromhex(val)
 
 
-class Result:
+class Result(AsyncContextMixin):
+    """ Represents the result of a query. Instantiated by Connection.execute.
 
+    """
     def __init__(self, cn, data, raw):
         self._cn = cn
         self._datetime_format = cn.datetime_format
@@ -79,12 +83,10 @@ class Result:
             if col_data["scale"] == 0:
                 if col_data["precision"] < 19:
                     return None
-                else:
-                    return int
-            else:
-                return Decimal
+                return int
+            return Decimal
 
-        elif data_type == 'DATE':
+        if data_type == 'DATE':
             if self._date_format == 'YYYY-MM-DD':
                 return date.fromisoformat
 
@@ -92,8 +94,7 @@ class Result:
             if self._can_parse_datetime:
                 if self._tz:
                     return self._get_datetime_tz
-                else:
-                    return datetime.fromisoformat
+                return datetime.fromisoformat
 
         elif data_type == 'TIMESTAMP':
             if self._can_parse_datetime:
@@ -144,13 +145,19 @@ class Result:
         return self._aiterator
 
     async def fetchone(self):
+        """ Returns the next row of the result as a tuple if available, else
+        None
+
+        """
         async for row in self:
             return row
 
     async def fetchall(self):
+        """ Returns a list of the remaining rows as tuples """
         return [row async for row in self]
 
     async def close(self):
+        """ Closes the result. Can be called multiple times """
         result_handle = self._result_handle
         if result_handle is not None:
             self._result_handle = None
@@ -160,20 +167,10 @@ class Result:
         if self._aiterator is not None:
             await self._aiterator.aclose()
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(
-            self,
-            exc_type: Optional[Type[BaseException]],
-            exc_val: Optional[BaseException],
-            exc_tb: Optional[TracebackType],
-            ) -> None:
-        await self.close()
-
     def __del__(self):
         result_handle = self._result_handle
-        if (result_handle is not None and self._cn.status == EXA_CONNECTED and
+        if (result_handle is not None and
+                self._cn.status is ExaConnStatus.CONNECTED and
                 not self._cn._loop.is_closed()):
             # Result is not fully consumed and not closed server-side yet. It
             # can not be closed now, because this is a synchronous method and

@@ -1,11 +1,13 @@
-from .common import (
-    EXA_CONN_CLOSED, EXA_WS_CONNECTED, EXA_CONNECTED, EXA_DISCONNECTING,
-    EXA_CLOSING,)
+""" exasyncio
+
+A python client library for the Exasol database using the asyncio framework
+
+"""
+from .common import ExaConnStatus
 from .connection import (
-    Connection, ExaException, ExaProtocolException, ExaServerException)
+    Connection, ExaError, ExaProtocolError, ExaServerError)
 from .resultset import ResultType
 
 __all__ = [
-    'Connection', 'EXA_CONN_CLOSED', 'EXA_WS_CONNECTED', 'EXA_CONNECTED',
-    'EXA_DISCONNECTING', 'EXA_CLOSING', 'ExaException', 'ExaProtocolException',
-    'ExaServerException']
+    'Connection', 'ExaConnStatus', 'ExaError', 'ExaProtocolError',
+    'ExaServerError', 'ResultType']

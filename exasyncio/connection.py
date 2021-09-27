@@ -1,3 +1,8 @@
+""" exasyncio connection
+
+Manage a connection to an Exacol database
+
+"""
 from asyncio import Lock, get_running_loop
 import base64
 import getpass
@@ -11,39 +16,34 @@ try:
 except ImportError:
     from backports import zoneinfo
 
-from types import TracebackType
-from typing import (
-    Optional,
-    Type,
-)
-
 import aiohttp
 import rsa
 
-from .common import (
-    EXA_CONN_CLOSED, EXA_WS_CONNECTED, EXA_CONNECTED, EXA_DISCONNECTING,
-    EXA_CLOSING,)
+from .common import ExaConnStatus, AsyncContextMixin
 from .resultset import Result
 
 _upper_zones = {z.upper(): z for z in zoneinfo.available_timezones()}
 
 
-class ExaException(Exception):
-    pass
+class ExaError(Exception):
+    """ Base class for Exasol Exceptions """
 
 
-class ExaProtocolException(ExaException):
-    pass
+class ExaProtocolError(ExaError):
+    """ Indicates an error in the communication protocol. Should not occur """
 
 
-class ExaServerException(ExaException):
+class ExaServerError(ExaError):
+    """ Encapsulates an error reported by the Exasol server """
 
     @property
     def code(self):
+        """ error code """
         return self.args[0]
 
     @property
     def message(self):
+        """ error message """
         return self.args[1]
 
 
@@ -53,8 +53,10 @@ def _from_arg_or_env(name, val, default=None):
     return os.environ.get(f"EXA{name}", default)
 
 
-class Connection:
+class Connection(AsyncContextMixin):
+    """ Represents an Exasol database connection using the websockets protocol.
 
+    """
     def __init__(
             self, host=None, port=None, user=None, password=None,
             schema='', autocommit=True, query_timeout=0,
@@ -75,41 +77,47 @@ class Connection:
         self._autocommit = autocommit
         self.query_timeout = query_timeout
         self.snapshot_transactions = snapshot_transactions
-        self.status = EXA_CONN_CLOSED
+        self.status = ExaConnStatus.CLOSED
         self.date_format = None
         self.datetime_format = None
         self._use_compression = use_compression
         self._tz = None
         self._ws = None
         self._req_lock = Lock()
+        self._session = None
+        self._ws = None
+        self._loop = None
+        self._recv_msg = self._recv_msg_uncompressed
+        self._send_msg = self._send_msg_uncompressed
 
     @property
     def autocommit(self):
+        """ Indicates if autocommit is enabled """
         return self._autocommit
 
     async def _connect(self):
-        if self.status != EXA_CONN_CLOSED:
+        if self.status is not ExaConnStatus.CLOSED:
             raise ValueError("Connection is already connected")
 
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self.uri)
         # self.ws = await ws_connect(self.uri)
-        self.status = EXA_WS_CONNECTED
+        self.status = ExaConnStatus.WS_CONNECTED
 
-    async def _recv_msg(self):
+    async def _recv_msg_uncompressed(self):
         msg = await self._ws.receive()
         return msg.data
 
     async def _recv_msg_compressed(self):
-        msg = await self._ws.receive()
-        return zlib.decompress(msg.data).decode()
+        data = await self._recv_msg_uncompressed()
+        return zlib.decompress(data).decode()
 
     async def _recv(self):
         data = await self._recv_msg()
         try:
             data = json.loads(data)
         except BaseException as ex:
-            raise ExaProtocolException("Invalid json") from ex
+            raise ExaProtocolError("Invalid json") from ex
 
         attrs = data.get("attributes")
         if attrs is not None:
@@ -127,26 +135,25 @@ class Connection:
         try:
             status = data["status"]
         except BaseException as ex:
-            raise ExaProtocolException("Error retrieving status") from ex
+            raise ExaProtocolError("Error retrieving status") from ex
 
         if status == "ok":
             return data
-        elif status == "error":
+        if status == "error":
             try:
                 ex_data = data["exception"]
                 sql_code = ex_data["sqlCode"]
                 text = ex_data["text"]
-            except BaseException as ex:
-                raise ExaProtocolException(
+            except KeyError as ex:
+                raise ExaProtocolError(
                     "Invalid or missing exception data") from ex
-            raise ExaServerException(sql_code, text)
-        else:
-            raise ExaProtocolException("Invalid status")
+            raise ExaServerError(sql_code, text)
+        raise ExaProtocolError("Invalid status")
 
     async def _send_msg_compressed(self, data):
         await self._ws.send_bytes(zlib.compress(data.encode(), 1))
 
-    async def _send_msg(self, data):
+    async def _send_msg_uncompressed(self, data):
         await self._ws.send_str(data)
 
     async def _request(self, data):
@@ -155,12 +162,12 @@ class Connection:
             return await self._recv()
 
     def _encrypt_password(self, public_key_pem):
-        pk = rsa.PublicKey.load_pkcs1(public_key_pem.encode())
-        return base64.b64encode(rsa.encrypt(self.__password, pk)).decode()
+        pub_key = rsa.PublicKey.load_pkcs1(public_key_pem.encode())
+        return base64.b64encode(rsa.encrypt(self.__password, pub_key)).decode()
 
     async def _login(self):
-        if self.status != EXA_WS_CONNECTED:
-            if self.status == EXA_CONN_CLOSED:
+        if self.status is not ExaConnStatus.WS_CONNECTED:
+            if self.status is ExaConnStatus.CLOSED:
                 err_msg = "Connection is closed"
             else:
                 err_msg = "Connection is logged in"
@@ -184,7 +191,7 @@ class Connection:
             self._recv_msg = self._recv_msg_compressed
             self._send_msg = self._send_msg_compressed
         self.date_format = 'YYYY-MM-DD'
-        self.status = EXA_CONNECTED
+        self.status = ExaConnStatus.CONNECTED
 
     def _get_login_attributes(self):
         attrs = {
@@ -218,6 +225,7 @@ class Connection:
         return _await().__await__()
 
     async def execute(self, query, raw=False):
+        """ Executes a query and returns the result """
         resp = await self._request({
             'command': 'execute',
             'sqlText': query,
@@ -236,37 +244,28 @@ class Connection:
         await self._close_results([handle])
 
     async def _close_results(self, handles):
-        if self.status != EXA_CONNECTED:
+        if self.status is not ExaConnStatus.CONNECTED:
             return
         await self._request({
             'command': 'closeResultSet', 'resultSetHandles': handles,
         })
 
     async def close(self):
-        ws = self._ws
-        if ws is not None:
+        """ Closes the connection. Can be called multiple times """
+
+        if self.status is ExaConnStatus.CONNECTED:
+            self.status = ExaConnStatus.DISCONNECTING
+            try:
+                await self._request({'command': 'disconnect'})
+            except BaseException:  # noqa
+                pass
+        self.status = ExaConnStatus.CLOSING
+        websocket = self._ws
+        if websocket is not None:
             self._ws = None
-            if self.status == EXA_CONNECTED:
-                self.status = EXA_DISCONNECTING
-                try:
-                    await self._request({'command': 'disconnect'})
-                except BaseException:
-                    pass
-            self.status = EXA_CLOSING
-            await ws.close()
-        self.status = EXA_CONN_CLOSED
+            await websocket.close()
+        self.status = ExaConnStatus.CLOSED
         session = self._session
         if session is not None:
             self._session = None
             await session.close()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(
-            self,
-            exc_type: Optional[Type[BaseException]],
-            exc_val: Optional[BaseException],
-            exc_tb: Optional[TracebackType],
-            ) -> None:
-        await self.close()

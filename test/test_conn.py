@@ -3,8 +3,8 @@ import os
 from unittest import IsolatedAsyncioTestCase
 
 from exasyncio import (
-    Connection, EXA_CONNECTED, EXA_CONN_CLOSED, ExaServerException,
-    ExaProtocolException)
+    Connection, ExaConnStatus, ExaServerError,
+    ExaProtocolError)
 
 
 def _from_env(name):
@@ -21,7 +21,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
     async def test_connect(self):
         cn = await Connection(
             exa_host, user=exa_user, password=exa_password)
-        self.assertEqual(cn.status, EXA_CONNECTED)
+        self.assertIs(cn.status, ExaConnStatus.CONNECTED)
         await cn.close()
 
     async def test_connect_using_environ(self):
@@ -29,14 +29,14 @@ class ConnTestCase(IsolatedAsyncioTestCase):
         os.environ["EXAUSER"] = exa_user
         os.environ["EXAPASSWORD"] = exa_password
         cn = await Connection()
-        self.assertEqual(cn.status, EXA_CONNECTED)
+        self.assertIs(cn.status, ExaConnStatus.CONNECTED)
         await cn.close()
         del os.environ["EXAHOST"]
         del os.environ["EXAUSER"]
         del os.environ["EXAPASSWORD"]
 
     async def test_wrong_credentials(self):
-        with self.assertRaises(ExaServerException) as ex:
+        with self.assertRaises(ExaServerError) as ex:
             await Connection(
                 exa_host, user=exa_user, password=exa_password + '1')
         self.assertEqual(ex.exception.code, "08004")
@@ -65,16 +65,16 @@ class ConnTestCase(IsolatedAsyncioTestCase):
         cn = await Connection(
             exa_host, user=exa_user, password=exa_password,
             use_compression=False)
-        self.assertEqual(cn.status, EXA_CONNECTED)
+        self.assertIs(cn.status, ExaConnStatus.CONNECTED)
         await cn.close()
 
     async def test_close_twice(self):
         async with await Connection(
                 exa_host, user=exa_user, password=exa_password,
                 use_compression=False) as cn:
-            self.assertEqual(cn.status, EXA_CONNECTED)
+            self.assertIs(cn.status, ExaConnStatus.CONNECTED)
         await cn.close()
-        self.assertEqual(cn.status, EXA_CONN_CLOSED)
+        self.assertIs(cn.status, ExaConnStatus.CLOSED)
 
     async def test_invalid_json(self):
         cn = Connection(
@@ -87,7 +87,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
             return "nonsense"
 
         cn._recv_msg = recv
-        with self.assertRaises(ExaProtocolException):
+        with self.assertRaises(ExaProtocolError):
             await cn
 
     async def test_unknown_timezone(self):
@@ -112,8 +112,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
 
     async def test_missing_response_status(self):
         async with Connection(
-                exa_host, user=exa_user, password=exa_password,
-                use_compression=False) as cn:
+                exa_host, user=exa_user, password=exa_password) as cn:
 
             old_recv = cn._recv_msg
 
@@ -124,7 +123,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
                 return json.dumps(json_data)
 
             cn._recv_msg = recv
-            with self.assertRaises(ExaProtocolException):
+            with self.assertRaises(ExaProtocolError):
                 await cn
 
     async def test_wrong_response_status(self):
@@ -141,7 +140,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
                 return json.dumps(json_data)
 
             cn._recv_msg = recv
-            with self.assertRaises(ExaProtocolException):
+            with self.assertRaises(ExaProtocolError):
                 await cn
 
     async def test_wrong_error_data(self):
@@ -159,7 +158,7 @@ class ConnTestCase(IsolatedAsyncioTestCase):
                 return json.dumps(json_data)
 
             cn._recv_msg = recv
-            with self.assertRaises(ExaProtocolException):
+            with self.assertRaises(ExaProtocolError):
                 await cn
 
     async def test_closed_conn_close_result(self):
