@@ -8,7 +8,10 @@ can be executed and the results examined.
 ## install
 
 If you want to give it a test run, create and activate a python virtual
-environment. (Note: tested with Python 3.8 and 3.9)
+environment.
+
+Note: tested with Python 3.8 and 3.9 on Ubuntu 20.04 using the Community
+Edition VM
 
 Upgrade the virtualenv and install the wheel format package
 
@@ -33,7 +36,7 @@ from exasyncio import Connection
 async def main(host):
     cn = await Connection(host, user="sys", password="exasol")
     res = await cn.execute("SELECT 3, 'hi' UNION SELECT 5, 'hello'")
-    data = await(res.fetchall())
+    data = await res.fetchall()
     print(data)
     await res.close()
     await cn.close()
@@ -43,6 +46,7 @@ async def main(host):
             host, user="sys", password="exasol") as cn:
         async with await cn.execute(
                 "SELECT 3, 'hi' UNION SELECT 5, 'hello'") as res:
+            # iterate instead of fetch
             async for row in res: 
                 print(row)
 
@@ -82,6 +86,28 @@ CHAR, VARCHAR | str
 BOOLEAN | bool
 
 Not converted (yet) are INTERVAL and GEOMETRY values.
+
+# unit tests
+
+Unit tests are in place. These can be run
+with a fully checked out source tree, by executing in the root of the tree:
+
+```bash
+export EXATESTHOST=<host_or_ip>
+export EXATESTUSER=<user>
+export EXATESTPASSWORD=<password>
+python -m unittest
+```
+
+Or with code coverage:
+
+```bash
+pip install coverage
+export EXATESTHOST=<host_or_ip>
+export EXATESTUSER=<user>
+export EXATESTPASSWORD=<password>
+coverage run -m unittest
+```
 
 # todo
 

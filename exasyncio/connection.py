@@ -3,7 +3,7 @@
 Manage a connection to an Exacol database
 
 """
-from asyncio import Lock, get_running_loop
+from asyncio import Lock, get_running_loop, wait_for
 import base64
 import getpass
 import json
@@ -19,9 +19,10 @@ except ImportError:
 import aiohttp
 import rsa
 
-from .common import ExaConnStatus, AsyncContextMixin
-from .resultset import Result
+from exasyncio.common import ExaConnStatus, AsyncContextMixin
+from exasyncio.result import Result
 
+# Exasol reports timezones in uppercase. Mapping to retrieve original name
 _upper_zones = {z.upper(): z for z in zoneinfo.available_timezones()}
 
 
@@ -77,7 +78,7 @@ class Connection(AsyncContextMixin):
         self._autocommit = autocommit
         self.query_timeout = query_timeout
         self.snapshot_transactions = snapshot_transactions
-        self.status = ExaConnStatus.CLOSED
+        self._status = ExaConnStatus.CLOSED
         self.date_format = None
         self.datetime_format = None
         self._use_compression = use_compression
@@ -95,14 +96,19 @@ class Connection(AsyncContextMixin):
         """ Indicates if autocommit is enabled """
         return self._autocommit
 
+    @property
+    def status(self):
+        """ Indicates the connection status """
+        return self._status
+
     async def _connect(self):
-        if self.status is not ExaConnStatus.CLOSED:
+        if self._status is not ExaConnStatus.CLOSED:
             raise ValueError("Connection is already connected")
 
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self.uri)
         # self.ws = await ws_connect(self.uri)
-        self.status = ExaConnStatus.WS_CONNECTED
+        self._status = ExaConnStatus.WS_CONNECTED
 
     async def _recv_msg_uncompressed(self):
         msg = await self._ws.receive()
@@ -166,12 +172,6 @@ class Connection(AsyncContextMixin):
         return base64.b64encode(rsa.encrypt(self.__password, pub_key)).decode()
 
     async def _login(self):
-        if self.status is not ExaConnStatus.WS_CONNECTED:
-            if self.status is ExaConnStatus.CLOSED:
-                err_msg = "Connection is closed"
-            else:
-                err_msg = "Connection is logged in"
-            raise ValueError(err_msg)
 
         resp = await self._request({'command': 'login', 'protocolVersion': 3})
         password = self._encrypt_password(resp['responseData']['publicKeyPem'])
@@ -191,7 +191,7 @@ class Connection(AsyncContextMixin):
             self._recv_msg = self._recv_msg_compressed
             self._send_msg = self._send_msg_compressed
         self.date_format = 'YYYY-MM-DD'
-        self.status = ExaConnStatus.CONNECTED
+        self._status = ExaConnStatus.CONNECTED
 
     def _get_login_attributes(self):
         attrs = {
@@ -244,28 +244,32 @@ class Connection(AsyncContextMixin):
         await self._close_results([handle])
 
     async def _close_results(self, handles):
-        if self.status is not ExaConnStatus.CONNECTED:
-            return
-        await self._request({
-            'command': 'closeResultSet', 'resultSetHandles': handles,
-        })
+        if self._status is ExaConnStatus.CONNECTED:
+            await self._request({
+                'command': 'closeResultSet', 'resultSetHandles': handles,
+            })
 
     async def close(self):
         """ Closes the connection. Can be called multiple times """
 
-        if self.status is ExaConnStatus.CONNECTED:
-            self.status = ExaConnStatus.DISCONNECTING
+        # send Exasol protocol disconnect
+        if self._status is ExaConnStatus.CONNECTED:
+            self._status = ExaConnStatus.DISCONNECTING
             try:
-                await self._request({'command': 'disconnect'})
+                await wait_for(self._request({'command': 'disconnect'}), 1)
             except BaseException:  # noqa
                 pass
-        self.status = ExaConnStatus.CLOSING
+            self._status = ExaConnStatus.CLOSING
+
+        # close websocket
         websocket = self._ws
         if websocket is not None:
             self._ws = None
-            await websocket.close()
-        self.status = ExaConnStatus.CLOSED
+            await wait_for(websocket.close(), 1)
+        self._status = ExaConnStatus.CLOSED
+
+        # cleanup aiohttp session
         session = self._session
         if session is not None:
             self._session = None
-            await session.close()
+            await wait_for(session.close(), 1)

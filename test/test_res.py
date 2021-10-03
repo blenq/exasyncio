@@ -130,11 +130,20 @@ class ResTestCase(IsolatedAsyncioTestCase):
                         AS HASHTYPE(16 BYTE))""")
         val = (await res.fetchall())[0][0]
         self.assertEqual(UUID('550e8400-e29b-11d4-a716-446655440099'), val)
+
         res = await self.cn.execute("""
             SELECT CAST('550e8400-e29b-11d4-a716-4466554400'
                         AS HASHTYPE(15 BYTE))""")
         val = (await res.fetchall())[0][0]
         self.assertEqual(bytes.fromhex('550e8400e29b11d4a7164466554400'), val)
+
+        await self.cn.execute("ALTER SESSION SET HASHTYPE_FORMAT='HEX'")
+        res = await self.cn.execute("""
+            SELECT CAST('550e8400-e29b-11d4-a716-446655440099'
+                        AS HASHTYPE(16 BYTE))""")
+        val = (await res.fetchall())[0][0]
+        self.assertEqual(
+            bytes.fromhex('550e8400e29b11d4a716446655440099'), val)
 
     async def test_raw(self):
         await self.cn.execute(

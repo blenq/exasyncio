@@ -52,15 +52,6 @@ class ConnTestCase(IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await cn
 
-    async def test_invalid_login(self):
-        cn = await Connection(
-            exa_host, user=exa_user, password=exa_password)
-        with self.assertRaises(ValueError):
-            await cn._login()
-        await cn.close()
-        with self.assertRaises(ValueError):
-            await cn._login()
-
     async def test_without_compression(self):
         cn = await Connection(
             exa_host, user=exa_user, password=exa_password,
