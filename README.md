@@ -16,7 +16,7 @@ Edition VM
 Upgrade the virtualenv and install the wheel format package
 
 ```shell
-pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip setuptools wheel
 ```
 
 Install exasyncio
